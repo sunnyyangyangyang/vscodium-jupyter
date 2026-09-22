@@ -73,7 +73,7 @@ jobs:
           echo "::notice::Building vscodium-jupyter $FULL_VERSION -> $VSIX_NAME (tag: $TAG_NAME)"
 
       - name: Publish to OpenVSX
-        run: npx ovsx publish "${{ steps.package.outputs.vsix_name }}" -p ${{ secrets.OVSX_PAT }}
+        run: npx ovsx publish --force "${{ steps.package.outputs.vsix_name }}" -p ${{ secrets.OVSX_PAT }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
