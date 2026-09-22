@@ -56,12 +56,23 @@ jobs:
         id: package
         run: |
           VERSION=$(node -p "require('./package.json').version")
-          # RPM-style packaging number (Release field, like 7.1.2-2):
-          # N = (number of builds of this base version already published, including the
-          # legacy -b<date> builds) + 1. A new base version starts at -1.
-          TOTAL=$(curl -sf "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases?per_page=100" | grep -oE '"name": *"Vscodium Jupyter [^"]*"' | grep -c "Vscodium Jupyter ${VERSION}-" || true)
-          TOTAL=${TOTAL:-0}
-          FULL_VERSION="${VERSION}-$((TOTAL + 1))"
+          # Stable patch within the official upstream date line (e.g. 2026.6.3 in the
+          # 2026.6 line): next patch = highest patch already released for this base line + 1,
+          # counted from this repository (plus the legacy -b<date> builds). GitHub releases are
+          # immutable, so a version deleted from OpenVSX is still counted and its permanently
+          # reserved registry identity is never re-attempted. A new base line publishes its
+          # packaged version as-is on first release.
+          BASE_PREFIX=$(printf '%s' "$VERSION" | sed 's/^\([0-9]*\.[0-9]*\)\..*/\1./')
+          RELS_JSON=$(curl -sf "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases?per_page=100" || true)
+          MAX_PATCH=$(printf '%s' "$RELS_JSON" | grep -oE '"name": *"Vscodium Jupyter [^"]*"' | grep -E "Vscodium Jupyter ${BASE_PREFIX}[0-9]+$" | cut -d'.' -f3 | sort -n | tail -1 || true)
+          LEGACY_B=$(printf '%s' "$RELS_JSON" | grep -oE '"name": *"Vscodium Jupyter [^"]*"' | grep -c "Vscodium Jupyter ${BASE_PREFIX}[0-9.]*-b" || true)
+          if [ -n "${MAX_PATCH:-}" ]; then
+            FULL_VERSION="${BASE_PREFIX}$((MAX_PATCH + 1))"
+          elif [ "${LEGACY_B:-0}" -gt 0 ]; then
+            FULL_VERSION="${BASE_PREFIX}$((LEGACY_B + 1))"
+          else
+            FULL_VERSION="$VERSION"
+          fi
           VSIX_NAME="vscodium-jupyter-${FULL_VERSION}.vsix"
           TAG_NAME="$FULL_VERSION"
 
