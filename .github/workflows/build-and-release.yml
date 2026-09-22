@@ -73,7 +73,15 @@ jobs:
           echo "::notice::Building vscodium-jupyter $FULL_VERSION -> $VSIX_NAME (tag: $TAG_NAME)"
 
       - name: Publish to OpenVSX
-        run: npx ovsx publish --force "${{ steps.package.outputs.vsix_name }}" -p ${{ secrets.OVSX_PAT }}
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}
+        run: |
+          EXT_ID=$(node -p "require('./package.json').publisher + '.' + require('./package.json').name")
+          # Refresh the stable base version: remove the previously published entry for this
+          # version (if any), then publish the new build. The OpenVSX CLI's publish endpoint
+          # rejects an already-published version, so an overwrite requires this two-step dance.
+          npx ovsx unpublish -v "${{ steps.package.outputs.version }}" -f -p "$OVSX_PAT" "$EXT_ID" || true
+          npx ovsx publish -p "$OVSX_PAT" "${{ steps.package.outputs.vsix_name }}"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
