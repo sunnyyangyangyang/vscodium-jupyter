@@ -307,16 +307,32 @@ function initialize(
 
 let capturedContext: KernelMessagingApi;
 
-// Create our window exports
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-(window as any).ipywidgetsKernel = {
+// Create our window exports.
+// This module is bundled both as a notebook preload and (so that rendering survives
+// hosts that do not load the preload into the renderer webview) inside the notebook
+// renderer entrypoint. When both copies evaluate in the same webview document, the
+// first one owns the global and later copies leave it alone.
+const widgetApi = {
     renderOutput,
     disposeOutput,
     restoreWidgets,
     initialize: () => {
-        requestWidgetVersion(capturedContext);
+        if (capturedContext) {
+            requestWidgetVersion(capturedContext);
+        }
     }
 };
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+if (!(window as any).ipywidgetsKernel) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).ipywidgetsKernel = widgetApi;
+}
+/**
+ * True when the copy of this module bundled with the renderer entrypoint (as opposed
+ * to the notebook preload) owns window.ipywidgetsKernel in the current webview.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const ownsWidgetApiGlobal = () => (window as any).ipywidgetsKernel === widgetApi;
 
 function requestWidgetVersion(context: KernelMessagingApi) {
     context.postKernelMessage({ type: IPyWidgetMessages.IPyWidgets_Request_Widget_Version });

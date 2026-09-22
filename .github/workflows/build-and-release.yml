@@ -56,12 +56,14 @@ jobs:
         id: package
         run: |
           VERSION=$(node -p "require('./package.json').version")
-          BUILD_SUFFIX=$(date +'%y%m%d')
-          RUN_ID=${GITHUB_RUN_NUMBER}
-          SHORT_SHA=$(git rev-parse --short HEAD)
-          FULL_VERSION="${VERSION}-b${BUILD_SUFFIX}-${RUN_ID}"
+          # RPM-style packaging number (Release field, like 7.1.2-2):
+          # N = (number of builds of this base version already published, including the
+          # legacy -b<date> builds) + 1. A new base version starts at -1.
+          TOTAL=$(curl -sf "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases?per_page=100" | grep -oE '"name": *"Vscodium Jupyter [^"]*"' | grep -c "Vscodium Jupyter ${VERSION}-" || true)
+          TOTAL=${TOTAL:-0}
+          FULL_VERSION="${VERSION}-$((TOTAL + 1))"
           VSIX_NAME="vscodium-jupyter-${FULL_VERSION}.vsix"
-          TAG_NAME="build-${BUILD_SUFFIX}-${SHORT_SHA}"
+          TAG_NAME="$FULL_VERSION"
 
           # Stamp the unique build version into package.json so every publish gets a fresh OpenVSX version
           sed -i "s/\"version\": \"${VERSION}\"/\"version\": \"${FULL_VERSION}\"/" package.json

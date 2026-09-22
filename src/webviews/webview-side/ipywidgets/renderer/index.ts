@@ -7,6 +7,7 @@ import { ActivationFunction, OutputItem, RendererContext } from 'vscode-notebook
 import { createDeferred, Deferred } from '../../../../platform/common/utils/async';
 import { NotebookMetadata } from '../../../../platform/common/utils';
 import { logErrorMessage } from '../../react-common/logger';
+import { activate as activateKernel, ownsWidgetApiGlobal } from '../kernel/index';
 
 function convertVSCodeOutputToExecuteResultOrDisplayData(outputItem: OutputItem):
     | (nbformat.IMimeBundle & {
@@ -41,7 +42,9 @@ async function getRendererFunction() {
         const getRendererFuncImpl = () => {
             const renderOutputFunc =
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                (window as any).ipywidgetsKernel?.renderOutput || (global as any).ipywidgetsKernel?.renderOutput;
+                (window as any).ipywidgetsKernel?.renderOutput ||
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                (globalThis as any).ipywidgetsKernel?.renderOutput;
             if (renderOutputFunc) {
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 (window as any).ipywidgetsKernel.initialize();
@@ -71,6 +74,34 @@ export const activate: ActivationFunction = (context) => {
     (globalThis as any).jupyter_vscode_rendererContext = context;
     logger('Jupyter IPyWidget Renderer Activated');
     hookupTestScripts(context);
+    // The kernel API (window.ipywidgetsKernel) is normally provided by the notebook
+    // preload script. When the host does not load that preload into this webview (e.g.
+    // hosts that do not grant the static preloads API proposal), the copy of the kernel
+    // module bundled with this renderer entrypoint owns the global instead. Wire that
+    // copy to the renderer messaging so widget version / kernel options requests get a
+    // response from the extension.
+    if (ownsWidgetApiGlobal()) {
+        const kernelContext = {
+            postKernelMessage: (message: unknown) => {
+                if (context.postMessage) {
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    context.postMessage(message as any);
+                }
+            },
+            onDidReceiveKernelMessage: (listener: (message: unknown) => void) => {
+                if (context.onDidReceiveMessage) {
+                    return context.onDidReceiveMessage((message: unknown) => {
+                        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                        if (message && typeof message === 'object' && 'type' in (message as any)) {
+                            listener(message);
+                        }
+                    });
+                }
+            }
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any;
+        activateKernel(kernelContext);
+    }
     const modelAvailabilityResponse = new Map<string, Deferred<{ hasWidgetState: boolean; kernelSelected: boolean }>>();
     const rendererInitPromise = createDeferred<{
         version?: 7 | 8;
@@ -220,7 +251,9 @@ export const activate: ActivationFunction = (context) => {
             logger(`Disposing rendered output for ${id}`);
             const disposeOutputFunc =
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                (window as any).ipywidgetsKernel?.disposeOutput || (global as any).ipywidgetsKernel?.disposeOutput;
+                (window as any).ipywidgetsKernel?.disposeOutput ||
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                (globalThis as any).ipywidgetsKernel?.disposeOutput;
             if (disposeOutputFunc) {
                 return disposeOutputFunc(id);
             }

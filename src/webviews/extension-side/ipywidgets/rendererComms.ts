@@ -5,7 +5,7 @@ import type * as nbformat from '@jupyterlab/nbformat';
 import type { IKernelConnection } from '@jupyterlab/services/lib/kernel/kernel';
 import type { IIOPubMessage, IOPubMessageType } from '@jupyterlab/services/lib/kernel/messages';
 import { injectable, inject } from 'inversify';
-import { Disposable, NotebookDocument, NotebookEditor, NotebookRendererMessaging, notebooks } from 'vscode';
+import { Disposable, EventEmitter, NotebookController, NotebookDocument, NotebookEditor, NotebookRendererMessaging, notebooks, Uri } from 'vscode';
 import { IKernel, IKernelProvider } from '../../../kernels/types';
 import { IControllerRegistration } from '../../../notebooks/controllers/types';
 import { IExtensionSyncActivationService } from '../../../platform/activation/types';
@@ -15,6 +15,10 @@ import { IDisposable } from '../../../platform/common/types';
 import { noop } from '../../../platform/common/utils/misc';
 import { logger } from '../../../platform/logging';
 import { IPyWidgetMessageDispatcherFactory } from '../../../notebooks/controllers/ipywidgets/message/ipyWidgetMessageDispatcherFactory';
+import { CommonMessageCoordinator } from '../../../notebooks/controllers/ipywidgets/message/commonMessageCoordinator';
+import { IServiceContainer } from '../../../platform/ioc/types';
+import { IWebviewCommunication } from '../../../platform/webviews/types';
+import { isJupyterNotebook } from '../../../platform/common/utils';
 
 type WidgetData = {
     model_id: string;
@@ -30,9 +34,12 @@ export class IPyWidgetRendererComms implements IExtensionSyncActivationService {
         @inject(IKernelProvider) private readonly kernelProvider: IKernelProvider,
         @inject(IControllerRegistration) private readonly controllers: IControllerRegistration,
         @inject(IPyWidgetMessageDispatcherFactory)
-        private readonly ipywidgetMessageDispatcher: IPyWidgetMessageDispatcherFactory
+        private readonly ipywidgetMessageDispatcher: IPyWidgetMessageDispatcherFactory,
+        @inject(IServiceContainer) private readonly serviceContainer: IServiceContainer
     ) {}
     private readonly widgetOutputsPerNotebook = new WeakMap<NotebookDocument, Set<string>>();
+    private readonly rendererChannelCoordinators = new WeakMap<NotebookDocument, CommonMessageCoordinator>();
+    private readonly rendererChannelEmitters = new WeakMap<NotebookEditor, EventEmitter<unknown>>();
     public dispose() {
         dispose(this.disposables);
     }
@@ -127,6 +134,48 @@ export class IPyWidgetRendererComms implements IExtensionSyncActivationService {
         if (message && typeof message === 'object' && message.command === 'ipywidget-renderer-loaded') {
             this.sendWidgetVersionAndState(comms, editor);
         }
+        // Kernel messages (shape `{ type }`) posted over the renderer messaging channel
+        // (used by the kernel API bundled with the renderer when the notebook preload
+        // script is not present in this webview) are routed to the widget coordinator.
+        if (message && typeof message === 'object' && 'type' in message) {
+            this.routeRendererChannelKernelMessage(comms, editor, message);
+        }
+    }
+    private routeRendererChannelKernelMessage(
+        comms: NotebookRendererMessaging,
+        editor: NotebookEditor,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        message: any
+    ) {
+        const notebook = editor.notebook;
+        if (notebook.isClosed || !isJupyterNotebook(notebook)) {
+            return;
+        }
+        let coordinator = this.rendererChannelCoordinators.get(notebook);
+        if (!coordinator) {
+            coordinator = new CommonMessageCoordinator(notebook, this.serviceContainer);
+            this.rendererChannelCoordinators.set(notebook, coordinator);
+            this.disposables.push(coordinator);
+        }
+        let emitter = this.rendererChannelEmitters.get(editor);
+        if (!emitter) {
+            emitter = new EventEmitter<unknown>();
+            this.rendererChannelEmitters.set(editor, emitter);
+            coordinator.attach({
+                controller: this.controllers.getSelected(notebook)?.controller as NotebookController,
+                onDidReceiveMessage: emitter.event,
+                postMessage: (msg: unknown) => comms.postMessage(msg as never, editor).then(() => true, () => false),
+                // Older hosts' renderer messaging API has no asWebviewUri; fall back to the
+                // original URI (only matters for locally-served widget scripts).
+                asWebviewUri: (uri: Uri) => {
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    const convert = (comms as any).asWebviewUri;
+                    return typeof convert === 'function' ? convert.call(comms, uri, editor) : uri;
+                }
+            } as IWebviewCommunication);
+            this.disposables.push(emitter);
+        }
+        emitter.fire(message);
     }
     private queryWidgetState(
         comms: NotebookRendererMessaging,
