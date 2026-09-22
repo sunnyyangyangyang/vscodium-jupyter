@@ -56,20 +56,20 @@ jobs:
         id: package
         run: |
           VERSION=$(node -p "require('./package.json').version")
-          # Stable patch within the official upstream date line (e.g. 2026.6.2 inside the
-          # 2026.6 line): version = highest published stable patch of this base line + 1,
-          # so OpenVSX auto-update always resolves the newest fixed build as 'latest'.
-          # The published set is read from the OpenVSX registry (what auto-update uses);
-          # if the registry is unreachable the packaged base version is published as-is.
-          # Pre-releases (-N, -b<date>) never count; a new base line publishes its
+          # Stable patch within the official upstream date line (e.g. 2026.6.3 in the
+          # 2026.6 line): next patch = highest patch already released for this base line + 1,
+          # counted from this repository (plus the legacy -b<date> builds). GitHub releases are
+          # immutable, so a version deleted from OpenVSX is still counted and its permanently
+          # reserved registry identity is never re-attempted. A new base line publishes its
           # packaged version as-is on first release.
-          PUBLISHER=$(node -p "require('./package.json').publisher")
-          PKG=$(node -p "require('./package.json').name")
           BASE_PREFIX=$(printf '%s' "$VERSION" | sed 's/^\([0-9]*\.[0-9]*\)\..*/\1./')
-          MAX_PATCH=$(curl -sf --max-time 30 "https://open-vsx.org/api/${PUBLISHER}/${PKG}" \
-            | grep -oE "${BASE_PREFIX}[0-9]+" | cut -d'.' -f3 | sort -n | tail -1 || true)
+          RELS_JSON=$(curl -sf "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases?per_page=100" || true)
+          MAX_PATCH=$(printf '%s' "$RELS_JSON" | grep -oE '"name": *"Vscodium Jupyter [^"]*"' | grep -E "Vscodium Jupyter ${BASE_PREFIX}[0-9]+$" | cut -d'.' -f3 | sort -n | tail -1 || true)
+          LEGACY_B=$(printf '%s' "$RELS_JSON" | grep -oE '"name": *"Vscodium Jupyter [^"]*"' | grep -c "Vscodium Jupyter ${BASE_PREFIX}[0-9.]*-b" || true)
           if [ -n "${MAX_PATCH:-}" ]; then
             FULL_VERSION="${BASE_PREFIX}$((MAX_PATCH + 1))"
+          elif [ "${LEGACY_B:-0}" -gt 0 ]; then
+            FULL_VERSION="${BASE_PREFIX}$((LEGACY_B + 1))"
           else
             FULL_VERSION="$VERSION"
           fi
