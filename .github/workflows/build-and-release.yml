@@ -56,14 +56,28 @@ jobs:
         id: package
         run: |
           VERSION=$(node -p "require('./package.json').version")
-          # OpenVSX carries the bare base version (the official upstream date-line
-          # identity, e.g. 2026.6.1): every push overwrite-publishes it, so the
-          # registry's 'latest' is always the newest fixed build and auto-update
-          # reaches every lower version. GitHub releases get a unique
-          # build-<date>-<sha> tag so re-pushes never collide.
-          FULL_VERSION="$VERSION"
-          VSIX_NAME="vscodium-jupyter-${VERSION}.vsix"
-          TAG_NAME="build-$(date +'%y%m%d')-$(git rev-parse --short HEAD)"
+          # Stable patch within the official upstream date line (e.g. 2026.6.2 inside the
+          # 2026.6 line): version = highest published stable patch of this base line + 1,
+          # so OpenVSX auto-update always resolves the newest fixed build as 'latest'.
+          # The published set is read from the OpenVSX registry (what auto-update uses);
+          # if the registry is unreachable the packaged base version is published as-is.
+          # Pre-releases (-N, -b<date>) never count; a new base line publishes its
+          # packaged version as-is on first release.
+          PUBLISHER=$(node -p "require('./package.json').publisher")
+          PKG=$(node -p "require('./package.json').name")
+          BASE_PREFIX=$(printf '%s' "$VERSION" | sed 's/^\([0-9]*\.[0-9]*\)\..*/\1./')
+          MAX_PATCH=$(curl -sf --max-time 30 "https://open-vsx.org/api/${PUBLISHER}/${PKG}" \
+            | grep -oE "${BASE_PREFIX}[0-9]+" | cut -d'.' -f3 | sort -n | tail -1 || true)
+          if [ -n "${MAX_PATCH:-}" ]; then
+            FULL_VERSION="${BASE_PREFIX}$((MAX_PATCH + 1))"
+          else
+            FULL_VERSION="$VERSION"
+          fi
+          VSIX_NAME="vscodium-jupyter-${FULL_VERSION}.vsix"
+          TAG_NAME="$FULL_VERSION"
+
+          # Stamp the unique build version into package.json so every publish gets a fresh OpenVSX version
+          sed -i "s/\"version\": \"${VERSION}\"/\"version\": \"${FULL_VERSION}\"/" package.json
 
           npx vsce package -o "$VSIX_NAME"
 
@@ -73,21 +87,13 @@ jobs:
           echo "::notice::Building vscodium-jupyter $FULL_VERSION -> $VSIX_NAME (tag: $TAG_NAME)"
 
       - name: Publish to OpenVSX
-        env:
-          OVSX_PAT: ${{ secrets.OVSX_PAT }}
-        run: |
-          EXT_ID=$(node -p "require('./package.json').publisher + '.' + require('./package.json').name")
-          # Refresh the stable base version: remove the previously published entry for this
-          # version (if any), then publish the new build. The OpenVSX CLI's publish endpoint
-          # rejects an already-published version, so an overwrite requires this two-step dance.
-          npx ovsx unpublish -v "${{ steps.package.outputs.version }}" -f -p "$OVSX_PAT" "$EXT_ID" || true
-          npx ovsx publish -p "$OVSX_PAT" "${{ steps.package.outputs.vsix_name }}"
+        run: npx ovsx publish "${{ steps.package.outputs.vsix_name }}" -p ${{ secrets.OVSX_PAT }}
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.package.outputs.tag_name }}
-          name: "Vscodium Jupyter ${{ steps.package.outputs.version }} (${{ steps.package.outputs.tag_name }})"
+          name: "Vscodium Jupyter ${{ steps.package.outputs.version }}"
           target_commitish: main
           generate_release_notes: true
           files: ${{ steps.package.outputs.vsix_name }}
